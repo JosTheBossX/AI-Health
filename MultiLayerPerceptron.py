@@ -1,0 +1,148 @@
+import numpy as np
+from scipy.special import xlogy
+
+def relu(z):
+    return np.maximum(z, 0)
+
+def d_relu(z):   #Gradients of ReLU
+    return np.maximum(z > 0, 0)
+
+def tanh(z):
+    return np.tanh(z)
+
+def d_tanh(z):  #Gradients of tanh
+    return 1-(tanh(z) ** 2)
+
+def sigmoid(z):
+    if np.all(z >= 0):
+        return 1.0 / (1.0 + np.exp(-z))
+    return np.exp(z) / (1.0 + np.exp(z))
+
+def softmax(z):
+    # To avoid overflow, reduce the exponent
+    low_z = z - np.max(z)
+    result = np.exp(low_z) / np.sum(np.exp(low_z), axis=0, keepdims=True)
+    return result
+
+def cross_entropy_loss(y_hat, y):
+    return -xlogy(y, y_hat).sum() / y_hat.shape[0]  # scikit-learn implementation
+
+def d_cross_entropy_loss(y_hat, y): #derivative of loss
+    return y_hat - y
+
+class Layer:
+    def __init__(self, num_neurons, num_inputs, activation_fn, gradient_fn):
+        self.num_neurons = num_neurons
+        self.num_inputs = num_inputs
+        self.activation_fn = activation_fn
+        self.gradient_fn = gradient_fn
+
+        # The following seems to provide the best results compared to various
+        # weight initialization techniques such as Xavier, He, etc.
+        min_r = 0
+        max_r = 1
+        self.w = np.random.uniform(min_r, max_r, size=(num_neurons, num_inputs)) #weight matrix
+        self.b = np.random.uniform(min_r, max_r, size=(num_neurons, 1))#bias
+       
+        self.mw = np.zeros(self.w.shape)# momentum for wiehgt
+        self.mb = np.zeros(self.b.shape)#momentum for bias
+        self.vw = np.zeros(self.w.shape)#velocity for weight
+        self.vb = np.zeros(self.b.shape)#velocity for bias
+        self.A = None #output of layer activation function
+        self.Z = None #this is the weighted input to the layer (see in forward function it is given to activation)
+    def output(self, x):
+        self.Z = np.dot(self.w, x) + self.b #weighted input given to activation
+        self.A = self.activation_fn(self.Z) #activation output
+        return self.A
+    
+# Multi Layer Perceptron class
+class Mlp:
+    def __init__(self, hidden_neurons, num_features, num_outputs, 
+                 hidden_activation_fn, hidden_gradient_fn, 
+                 output_activation_fn, lr=0.003, random_state=60,
+                 verbose=False):
+        if random_state:
+            np.random.seed(random_state)
+        self.layers = []
+        num_inputs = num_features
+        for neurons in hidden_neurons:
+            self.layers.append(Layer(neurons, num_inputs, 
+                                     hidden_activation_fn, 
+                                    hidden_gradient_fn))
+            num_inputs = neurons
+        
+        # Add the output layer. Number of neurons in the output layer 
+        # is num_outputs and number of inputs is number of neurons of the 
+        # last hidden layer
+        self.layers.append(Layer(num_outputs, num_inputs,
+                                 output_activation_fn, None))
+        self.num_features = num_features
+        self.num_outputs = num_outputs
+        self.output_activation_fn = output_activation_fn
+        self.lr = lr
+        self.verbose = verbose
+        self.data_store = {}
+  
+    def forward(self, x):
+        inp = x
+        output = None
+        for layer in self.layers:
+            output = layer.output(inp)
+            inp = output
+        return output
+    
+    def predict_proba(self, x):
+        return self.forward(x)
+    
+    def predict(self, x):
+        y_hat = np.zeros([self.num_outputs, x.shape[1]]).astype(int)
+        output = self.predict_proba(x)
+        y_hat[np.argmax(output, axis=0), np.arange(output.shape[1])] = 1
+        return y_hat
+    
+    def backward(self, x, y, y_hat, beta1=0.9, beta2=0.999, epsilon=1e-8):
+        num_samples = x.shape[1]
+        dz =  d_cross_entropy_loss(y_hat, y)
+        for idx in range(len(self.layers) - 1, -1, -1):
+            layer = self.layers[idx]
+            prev_layer = self.layers[idx - 1] if idx else None
+            
+            inp = x if idx == 0 else prev_layer.A
+            dw = np.dot(dz, inp.T) / num_samples
+            db = np.sum(dz, axis=1, keepdims=True) / num_samples
+            if idx:
+                dz = np.multiply(np.dot(layer.w.T, dz), 
+                             prev_layer.gradient_fn(prev_layer.A))
+            
+            # Momentum
+            layer.mw = beta1 * layer.mw + (1 - beta1) * dw
+            layer.mb = beta1 * layer.mb + (1 - beta1) * db
+            # Adam's Optimizer - Velocity
+            layer.vw = beta2 * layer.vw + (1 - beta2) * (dw ** 2)
+            layer.vb = beta2 * layer.vb + (1 - beta2) * (db ** 2)
+            
+            # update weights and bias
+            layer.w -= (self.lr * (layer.mw / (np.sqrt(layer.vw) + epsilon)))
+            layer.b -= (self.lr * (layer.mb / (np.sqrt(layer.vb) + epsilon)))
+            
+    def make_mini_batches(self, x, y, batch_size):
+        batches = []
+        for b in range(0, x.shape[1], batch_size):
+            x_batch = x[:, b:b + batch_size]
+            y_batch = y[:, b:b + batch_size]
+            batches.append((x_batch, y_batch))
+        return batches
+                             
+    def fit(self, x, y, batch_size=64, epochs=500):
+        for e in range(epochs):
+            cost = 0
+            batches = self.make_mini_batches(x, y, batch_size)
+            for x_batch, y_batch in batches:    
+                y_hat = self.forward(x_batch)
+                cost = cross_entropy_loss(y_hat, y_batch)
+                self.backward(x_batch, y_batch, y_hat)
+            if self.verbose and (e % 500 == 0):
+                print('cost after epoch {} is {}'.format(e, cost))
+                # pass
+        return self
+#Credits for this code goes to github.com/raosukruth

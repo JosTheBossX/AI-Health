@@ -1,0 +1,6 @@
+numpy
+scipy
+scikit-learn
+joblib
+from scipy.special import xlogy
+from scipy.signal import spectrogram
